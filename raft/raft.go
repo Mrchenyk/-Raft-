@@ -26,11 +26,13 @@ import (
 
 	//	"course/labgob"
 	"course/labrpc"
+
 )
 
 const(
 	electionTimeoutMin time.Duration=250*time.Millisecond
 	electionTimeoutMax time.Duration=400*time.Millisecond
+	replicateInterval time.Duration=200*time.Millisecond
 )
 
 func (rf *Raft)resetElectionTImeout(){
@@ -127,9 +129,6 @@ func (rf *Raft)becomeLeader(){
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	
-	// Your code here (PartA).
 	return rf.currentTerm, rf.role==Leader
 }
 
@@ -183,7 +182,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (PartA, PartB).
+
 	Term int
 	CandidateID int
 }
@@ -191,14 +190,13 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (PartA).
+	//都要大写开头不然RPC框架无法序列化和反序列化
 	Term int 
 	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (PartA, PartB).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -299,13 +297,13 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) electionTicker() {
+	
 	for !rf.killed() {
-
-		// Your code here (PartA)
 		// Check if a leader election should be started.
 		rf.mu.Lock()
-		if rf.role!=Leader&&!rf.isElectionTimeout(){
+		if rf.role!=Leader&& rf.isElectionTimeout(){
 			rf.becomeCandidate()
+			LOG(rf.me,rf.currentTerm,DInfo,"Peer:%v start election",rf.me)
 			go rf.startElection(rf.currentTerm)
 		}
 		rf.mu.Unlock()
@@ -322,8 +320,93 @@ func (rf *Raft)contextLostLocked(role Role,term int)bool{
 
 }
 
-func (rf *Raft)replicationTicker(term int){
+type AppendEntriesArgs struct {
+	Term int
+	LeaderId int
+
+}
+
+type AppendEntriesReply struct {
+	Term int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs,reply *AppendEntriesReply){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	//对齐Term
+	if args.Term<rf.currentTerm{
+		LOG(rf.me,rf.currentTerm,DVote,"Lost leader to %s[T%d],abort replication",rf.role,rf.currentTerm)
+		return
+	}
+	if args.Term>rf.currentTerm{
+		rf.becomeFollower(args.Term)
+	}
+
+	rf.resetElectionTImeout()
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) startReplication(term int)bool{
+
 	
+	replicateToPeer:=func(peer int,args *AppendEntriesArgs){
+		reply:=&AppendEntriesReply{}
+		//发送日志同步RPC
+		ok:=rf.sendAppendEntries(peer,args,reply)
+
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if !ok{
+			LOG(rf.me,rf.currentTerm,DDebug,"Ask for vote from %d failed",peer)
+			return
+		}
+
+		//对齐term
+		if reply.Term>rf.currentTerm{
+			rf.becomeFollower(reply.Term)
+			return
+		}
+		
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.contextLostLocked(Leader,term){
+		LOG(rf.me,rf.currentTerm,DVote,"Lost leader to %s[T%d],abort replication",term,rf.role,rf.currentTerm)
+		return false
+	}
+
+	for peer:=0;peer<len(rf.peers);peer++{
+		if peer==rf.me {
+			continue
+		}
+
+		args:=&AppendEntriesArgs{
+			Term:rf.currentTerm,
+			LeaderId:rf.me,
+		}
+		go replicateToPeer(peer,args)
+	}
+	return true
+}
+
+//只有在任期内才能
+func (rf *Raft)replicationTicker(term int){
+	for !rf.killed() {
+		ok:=rf.startReplication(term)
+		if !ok{
+			break
+		}
+
+		time.Sleep(replicateInterval)
+	}
 }
 
 func (rf *Raft)startElection(term int){
@@ -405,7 +488,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	LOG(rf.me,rf.currentTerm,DInfo,"make Peer:%v success!",rf.role)
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
 

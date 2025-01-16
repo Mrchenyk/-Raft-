@@ -65,20 +65,21 @@ var logStart time.Time
 var logLevel int
 
 func init() {
-	logLevel = getEnvLevel()
+	fmt.Println("hello")
+	logLevel = 0
 	logStart = time.Now()
 
 	// do not print verbose date
-	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+	// log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 }
 
 func LOG(peerId int, term int, topic logTopic, format string, a ...interface{}) {
-	topicLevel := getTopicLevel(topic)
-	if logLevel <= topicLevel {
+	// topicLevel := getTopicLevel(topic)
+	// if logLevel <= topicLevel {
 		time := time.Since(logStart).Microseconds()
 		time /= 100
 		prefix := fmt.Sprintf("%06d T%04d %v S%d ", time, term, string(topic), peerId)
 		format = prefix + format
 		log.Printf(format, a...)
-	}
+	// }
 }
