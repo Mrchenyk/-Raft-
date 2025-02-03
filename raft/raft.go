@@ -1,31 +1,10 @@
 package raft
 
-//
-// this is an outline of the API that raft must expose to
-// the service (or tester). see comments below for
-// each of these functions for more details.
-//
-// rf = Make(...)
-//   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
-//   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leadcer
-// ApplyMsg
-//   each time a new entry is committed to the log, each Raft peer
-//   should send an ApplyMsg to the service (or tester)
-//   in the same server.
-//
-
 import (
-	//	"bytes"
-	"math/rand"
+	"course/labrpc"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	//	"course/labgob"
-	"course/labrpc"
 
 )
 
@@ -35,15 +14,6 @@ const(
 	replicateInterval time.Duration=200*time.Millisecond
 )
 
-func (rf *Raft)resetElectionTImeout(){
-	rf.electionStart=time.Now()
-	randRange:=int64(electionTimeoutMax-electionTimeoutMin)
-	rf.electionTimeout=electionTimeoutMin+time.Duration(rand.Int63()%randRange)
-}
-
-func (rf *Raft)isElectionTimeout()bool{
-	return time.Since(rf.electionStart) >rf.electionTimeout
-}
 
 type Role string
 const(
@@ -52,28 +22,18 @@ const(
 	Leader Role="Leader"
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part PartD you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
+
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
-
-	
 	SnapshotValid bool
 	Snapshot      []byte
 	SnapshotTerm  int
 	SnapshotIndex int
 }
 
-// A Go object implementing a single Raft peer.
+// Raft节点定义
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -88,6 +48,19 @@ type Raft struct {
 	electionStart time.Time
 	electionTimeout time.Duration
 
+	//每个节点的日志
+	log []LogEntry
+
+	//Leader节点使用
+	//节点的视图
+	nextIndex []int
+	matchIndex []int
+
+	//apply loop 的字段
+	applyCh chan ApplyMsg
+	commitIndex int
+	lastApplied int
+	applyCond *sync.Cond
 }
 
 func (rf *Raft)becomeFollower(term int){
@@ -95,7 +68,7 @@ func (rf *Raft)becomeFollower(term int){
 		LOG(rf.me,rf.currentTerm,DError,"can't become Follower,lower term:%d",term)
 		return
 	}
-	LOG(rf.me,rf.currentTerm,DLog,"%s->Follower,For T:%s->T:%s",rf.role,rf.currentTerm,term)
+	LOG(rf.me,rf.currentTerm,DLog,"%s->Follower,For T:%d->T:%d",rf.role,rf.currentTerm,term)
 
 	if term>rf.currentTerm{
 		rf.votedFor=-1
@@ -107,10 +80,10 @@ func (rf *Raft)becomeFollower(term int){
 
 func (rf *Raft)becomeCandidate(){
 	if rf.role==Leader{
-		LOG(rf.me,rf.currentTerm,DError,"leader can't become Candidate,node:%s",rf.me)
+		LOG(rf.me,rf.currentTerm,DError,"leader can't become Candidate,node:%v",rf.me)
 		return 
 	}
-	LOG(rf.me,rf.currentTerm,DVote,"%s->candidate,For T%s",rf.role,rf.currentTerm+1)
+	LOG(rf.me,rf.currentTerm,DVote,"%s->candidate,For T%d",rf.role,rf.currentTerm+1)
 	rf.currentTerm++
 	rf.role=Candidate
 	rf.votedFor=rf.me 
@@ -122,8 +95,14 @@ func (rf *Raft)becomeLeader(){
 		return
 	}
 
-	LOG(rf.me,rf.currentTerm,DLeader,"become leader in T:%s",rf.currentTerm)
+	LOG(rf.me,rf.currentTerm,DLeader,"become leader in T:%v",rf.currentTerm)
 	rf.role=Leader
+
+	//初始化每个节点的nextIndex和matchIndex
+	for peer:=0;peer<len(rf.peers);peer++{
+		rf.nextIndex[peer]=len(rf.log)
+		rf.matchIndex[peer]=0
+	}
 }
 
 // return currentTerm and whether this server
@@ -179,103 +158,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
 
-	Term int
-	CandidateID int
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	//都要大写开头不然RPC框架无法序列化和反序列化
-	Term int 
-	VoteGranted bool
-}
-
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term=rf.currentTerm
-	reply.VoteGranted=false
-
-	//align term
-	if args.Term<rf.currentTerm{
-
-		return
-	}
-
-	if args.Term>rf.currentTerm{
-		rf.becomeFollower(args.Term)
-	}
-
-	//check for votefor
-	if rf.votedFor!=-1{
-		return
-	}
-
-	reply.VoteGranted=true
-	rf.votedFor=args.CandidateID
-	rf.resetElectionTImeout()
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (PartB).
-
-	return index, term, isLeader
-}
 
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
@@ -296,172 +179,13 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) electionTicker() {
-	
-	for !rf.killed() {
-		// Check if a leader election should be started.
-		rf.mu.Lock()
-		if rf.role!=Leader&& rf.isElectionTimeout(){
-			rf.becomeCandidate()
-			LOG(rf.me,rf.currentTerm,DInfo,"Peer:%v start election",rf.me)
-			go rf.startElection(rf.currentTerm)
-		}
-		rf.mu.Unlock()
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-	}
-}
 
 func (rf *Raft)contextLostLocked(role Role,term int)bool{
 	return !(rf.currentTerm==term&&rf.role==role);
 
 }
 
-type AppendEntriesArgs struct {
-	Term int
-	LeaderId int
 
-}
-
-type AppendEntriesReply struct {
-	Term int
-	Success bool
-}
-
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs,reply *AppendEntriesReply){
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	//对齐Term
-	if args.Term<rf.currentTerm{
-		LOG(rf.me,rf.currentTerm,DVote,"Lost leader to %s[T%d],abort replication",rf.role,rf.currentTerm)
-		return
-	}
-	if args.Term>rf.currentTerm{
-		rf.becomeFollower(args.Term)
-	}
-
-	rf.resetElectionTImeout()
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
-
-func (rf *Raft) startReplication(term int)bool{
-
-	
-	replicateToPeer:=func(peer int,args *AppendEntriesArgs){
-		reply:=&AppendEntriesReply{}
-		//发送日志同步RPC
-		ok:=rf.sendAppendEntries(peer,args,reply)
-
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if !ok{
-			LOG(rf.me,rf.currentTerm,DDebug,"Ask for vote from %d failed",peer)
-			return
-		}
-
-		//对齐term
-		if reply.Term>rf.currentTerm{
-			rf.becomeFollower(reply.Term)
-			return
-		}
-		
-	}
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if rf.contextLostLocked(Leader,term){
-		LOG(rf.me,rf.currentTerm,DVote,"Lost leader to %s[T%d],abort replication",term,rf.role,rf.currentTerm)
-		return false
-	}
-
-	for peer:=0;peer<len(rf.peers);peer++{
-		if peer==rf.me {
-			continue
-		}
-
-		args:=&AppendEntriesArgs{
-			Term:rf.currentTerm,
-			LeaderId:rf.me,
-		}
-		go replicateToPeer(peer,args)
-	}
-	return true
-}
-
-//只有在任期内才能
-func (rf *Raft)replicationTicker(term int){
-	for !rf.killed() {
-		ok:=rf.startReplication(term)
-		if !ok{
-			break
-		}
-
-		time.Sleep(replicateInterval)
-	}
-}
-
-func (rf *Raft)startElection(term int){
-	votes:=0
-	askVoteFromPeer:=func(peer int,args *RequestVoteArgs){
-		reply:=&RequestVoteReply{}
-		ok:=rf.sendRequestVote(peer,args,reply)
-
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if !ok{
-			LOG(rf.me,rf.currentTerm,DDebug,"Ask for vote from %d failed",peer)
-			return 
-		}
-
-		if reply.Term>rf.currentTerm{
-			rf.becomeFollower(reply.Term);
-			return
-		}
-
-		if rf.contextLostLocked(Candidate,term){
-			LOG(rf.me,rf.currentTerm,DVote,"Lost context,abort RequestVote from %d",peer)
-			return
-		}
-
-		if reply.VoteGranted {
-			votes++
-			if(votes>len(rf.peers)/2){
-				rf.becomeLeader()
-				go rf.replicationTicker(term)
-			}
-		}
-
-	}
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if rf.contextLostLocked(Candidate,term){
-		LOG(rf.me,rf.currentTerm,DVote,"Lost Candidate to %s,abort RequestVote",rf.role)
-		return
-	}
-	for peer:=0;peer<len(rf.peers);peer++{
-		if peer==rf.me{
-			votes++;
-			continue;
-		}
-		
-		args:=&RequestVoteArgs{
-			Term: rf.currentTerm,
-			CandidateID: rf.me,
-		}
-
-		go askVoteFromPeer(peer,args)
-	}
-}
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -479,18 +203,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// Your initialization code here (PartA, PartB, PartC).
-
 	rf.role=Follower
 	rf.currentTerm=0
 	rf.votedFor=-1
 
+	//放入空节点避免边界判断
+	rf.log = append(rf.log, LogEntry{})
+	rf.matchIndex=make([]int, len(rf.peers))
+	rf.nextIndex=make([]int, len(rf.peers))
+
+	//用于日志apply的初始化
+	rf.applyCh=applyCh
+	rf.applyCond=sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	LOG(rf.me,rf.currentTerm,DInfo,"make Peer:%v success!",rf.role)
-	// start ticker goroutine to start elections
+	// 全局Ticker
 	go rf.electionTicker()
-
+	go rf.applyTicker()
 	return rf
 }
