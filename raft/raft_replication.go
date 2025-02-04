@@ -31,6 +31,9 @@ type AppendEntriesReply struct {
 	Term    int
 	Success bool
 
+	ConfilicIndex int
+	ConfilicTerm int
+
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -46,21 +49,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		LOG(rf.me, rf.currentTerm, DVote, "Lost leader to %s[T%d],abort replication", rf.role, rf.currentTerm)
 		return
 	}
-	if args.Term > rf.currentTerm {
+	if args.Term >= rf.currentTerm {
 		rf.becomeFollower(args.Term)
 	}
+	defer rf.resetElectionTImeout()
 
 	if(args.PrevLogIndex>=len(rf.log)){
+		reply.ConfilicIndex=len(rf.log)
+		reply.ConfilicTerm=InvalidTerm
 		LOG(rf.me, rf.currentTerm, DLog2, "<-%d,Follower too short,reject log", args.LeaderId)
 		return
 	}
+
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.ConfilicTerm=rf.log[args.PrevLogIndex].Term
+		reply.ConfilicIndex=rf.firstLogFor(reply.ConfilicTerm)
 		LOG(rf.me, rf.currentTerm, DLog2, "<-%d,Reject log,prev index do not match", args.LeaderId)
 		return
 	}
 
 	// 没有问题 把日志append到本地
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.persist()
 
 	reply.Success = true
 
@@ -69,7 +79,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex=args.LeaderCommit
 		rf.applyCond.Signal()
 	}
-	rf.resetElectionTImeout()
+
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -114,13 +124,28 @@ func (rf *Raft) startReplication(term int) bool {
 		//处理reply
 		//如果index对不上就要往回找
 		if !reply.Success {
-			//回退一个term
-			idx:=args.PrevLogIndex
-			term:=args.PrevLogTerm
-			for idx>0&&rf.log[idx].Term==term{
-				idx--
+			// 保存调整前的nextIndex值
+			preIndex := rf.nextIndex[peer]
+			// 如果回复的任期无效，说明Follower的日志比Leader短，则以Follower为准
+			if reply.ConfilicTerm == InvalidTerm {
+				rf.nextIndex[peer] = reply.ConfilicIndex
+			} else {
+				//否则回滚到冲突任期的第一个日志
+				// 获取冲突任期的第一个日志索引
+				firstIndex := rf.firstLogFor(reply.ConfilicTerm)
+				// 如果找到了有效的日志索引，则将nextIndex设置为该索引值
+				if firstIndex != InvalidIndex {
+					rf.nextIndex[peer] = firstIndex
+				} else {
+					// 否则，以Follower为准
+					rf.nextIndex[peer] = reply.ConfilicIndex
+				}
 			}
-			rf.nextIndex[peer]=idx+1
+
+			// 确保nextIndex不会增加，如果增加了则将其回退到调整前的值
+			if rf.nextIndex[peer] > preIndex {
+				rf.nextIndex[peer] = preIndex
+			}
 			return
 		}
 
@@ -129,7 +154,7 @@ func (rf *Raft) startReplication(term int) bool {
 		rf.nextIndex[peer]=rf.matchIndex[peer]+1
 
 		majorityMatched:=rf.getMajorityMatched()
-		if majorityMatched>rf.commitIndex{
+		if majorityMatched>rf.commitIndex&&rf.log[majorityMatched].Term==rf.currentTerm{
 			rf.commitIndex=majorityMatched
 			rf.applyCond.Signal()
 		}

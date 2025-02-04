@@ -75,6 +75,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.VoteGranted=true
 	rf.votedFor=args.CandidateID
+	rf.persist()
 	rf.resetElectionTImeout()
 }
 
@@ -133,7 +134,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command:command,
 		CommandValid:true,
 		Term: rf.currentTerm,})
-
+	rf.persist()
 	LOG(rf.me,rf.currentTerm,DInfo,"Peer:%v append log %v",rf.me,rf.log)
 
 	return len(rf.log)-1, rf.currentTerm, true
