@@ -54,22 +54,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	defer rf.resetElectionTImeout()
 
-	if(args.PrevLogIndex>=len(rf.log)){
-		reply.ConfilicIndex=len(rf.log)
+	if(args.PrevLogIndex>=rf.log.size()){
+		reply.ConfilicIndex=rf.log.size()
 		reply.ConfilicTerm=InvalidTerm
 		LOG(rf.me, rf.currentTerm, DLog2, "<-%d,Follower too short,reject log", args.LeaderId)
 		return
 	}
 
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.ConfilicTerm=rf.log[args.PrevLogIndex].Term
-		reply.ConfilicIndex=rf.firstLogFor(reply.ConfilicTerm)
+	if rf.log.at(args.PrevLogIndex).Term != args.PrevLogTerm {
+		reply.ConfilicTerm=rf.log.at(args.PrevLogIndex).Term
+		reply.ConfilicIndex=rf.log.firstFor(reply.ConfilicTerm)
 		LOG(rf.me, rf.currentTerm, DLog2, "<-%d,Reject log,prev index do not match", args.LeaderId)
 		return
 	}
 
 	// 没有问题 把日志append到本地
-	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.log.appendFrom(args.PrevLogIndex,args.Entries)
 	rf.persist()
 
 	reply.Success = true
@@ -87,12 +87,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft)getMajorityMatched() int{
-	temIndexes:=make([]int,len(rf.matchIndex))
-	copy(temIndexes,rf.matchIndex)
-	sort.Ints(sort.IntSlice(temIndexes))
-	majorityIdx:=((len(rf.peers))-1)/2
-	return temIndexes[majorityIdx]
+func (rf *Raft) getMajorityIndex() int {
+	tmpIndexes := make([]int, len(rf.peers))
+	copy(tmpIndexes, rf.matchIndex)
+	sort.Ints(sort.IntSlice(tmpIndexes))
+	majorityIdx := (len(rf.peers) - 1) / 2
+	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexes, majorityIdx, tmpIndexes[majorityIdx])
+	return tmpIndexes[majorityIdx]
 }
 
 func (rf *Raft) startReplication(term int) bool {
@@ -132,7 +133,7 @@ func (rf *Raft) startReplication(term int) bool {
 			} else {
 				//否则回滚到冲突任期的第一个日志
 				// 获取冲突任期的第一个日志索引
-				firstIndex := rf.firstLogFor(reply.ConfilicTerm)
+				firstIndex := rf.log.firstFor(reply.ConfilicTerm)
 				// 如果找到了有效的日志索引，则将nextIndex设置为该索引值
 				if firstIndex != InvalidIndex {
 					rf.nextIndex[peer] = firstIndex
@@ -142,7 +143,7 @@ func (rf *Raft) startReplication(term int) bool {
 				}
 			}
 
-			// 确保nextIndex不会增加，如果增加了则将其回退到调整前的值
+			// 确保nextIndex不会反复横跳，如果增加了则将其回退到调整前的值
 			if rf.nextIndex[peer] > preIndex {
 				rf.nextIndex[peer] = preIndex
 			}
@@ -153,8 +154,8 @@ func (rf *Raft) startReplication(term int) bool {
 		rf.matchIndex[peer]=args.PrevLogIndex+len(args.Entries)
 		rf.nextIndex[peer]=rf.matchIndex[peer]+1
 
-		majorityMatched:=rf.getMajorityMatched()
-		if majorityMatched>rf.commitIndex&&rf.log[majorityMatched].Term==rf.currentTerm{
+		majorityMatched:=rf.getMajorityIndex()
+		if majorityMatched>rf.commitIndex&&rf.log.at(majorityMatched).Term==rf.currentTerm{
 			rf.commitIndex=majorityMatched
 			rf.applyCond.Signal()
 		}
@@ -170,20 +171,32 @@ func (rf *Raft) startReplication(term int) bool {
 
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
-			rf.matchIndex[peer]=len(rf.log)-1
-			rf.nextIndex[peer]=len(rf.log)
+			rf.matchIndex[peer]=rf.log.size()-1
+			rf.nextIndex[peer]=rf.log.size()
 			continue
 		}
 
 
 		preIdx:=rf.nextIndex[peer]-1
-		preTerm:=rf.log[preIdx].Term
+		if preIdx<rf.log.snapLastIndex{
+			args:=&InstallSnapshotArgs{
+				Term:rf.currentTerm,
+				LeaderId: rf.me,
+				LastIncludeIndex: rf.log.snapLastIndex,
+				LastIncludeTerm: rf.log.snapLastTerm,
+				Snapshot: rf.log.snapshot,
+			}
+			go rf.installToPeer(peer,rf.currentTerm,args)
+			continue
+		}
+
+		preTerm:=rf.log.at(preIdx).Term
 		args := &AppendEntriesArgs{
 			Term:     rf.currentTerm,
 			LeaderId: rf.me,
 			PrevLogIndex: preIdx,
 			PrevLogTerm: preTerm,
-			Entries: rf.log[preIdx+1:],
+			Entries: rf.log.tail(preIdx+1),
 			LeaderCommit: rf.commitIndex,
 		}
 

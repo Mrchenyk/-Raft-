@@ -17,8 +17,8 @@ func (rf *Raft) isElectionTimeout() bool {
 
 //比较哪一个日志更新
 func (rf *Raft) isMoreUpToDate(candidateIndex, candidateTerm int) bool{
-	l:=len(rf.log)
-	lastIndex,lastTerm:=l-1,rf.log[l-1].Term
+
+	lastIndex,lastTerm:=rf.log.last()
 	if lastTerm!=candidateTerm{
 		return lastTerm>candidateTerm
 	}
@@ -111,34 +111,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
-	if rf.role!=Leader{
-		return 0,0,false
-	}
-	rf.log=append(rf.log,LogEntry{
-		Command:command,
-		CommandValid:true,
-		Term: rf.currentTerm,})
-	rf.persist()
-	LOG(rf.me,rf.currentTerm,DInfo,"Peer:%v append log %v",rf.me,rf.log)
-
-	return len(rf.log)-1, rf.currentTerm, true
-}
 
 func (rf *Raft) electionTicker() {
 	
@@ -199,7 +172,7 @@ func (rf *Raft)startElection(term int){
 		return
 	}
 
-	l:=len(rf.log)
+	lastIdx,lastTerm:=rf.log.last()
 
 	for peer:=0;peer<len(rf.peers);peer++{
 		if peer==rf.me{
@@ -210,8 +183,8 @@ func (rf *Raft)startElection(term int){
 		args:=&RequestVoteArgs{
 			Term: rf.currentTerm,
 			CandidateID: rf.me,
-			LastLogIndex: l-1,
-			LastLogTerm: rf.log[l-1].Term,
+			LastLogIndex: lastIdx,
+			LastLogTerm: lastTerm,
 		}
 
 		go askVoteFromPeer(peer,args)

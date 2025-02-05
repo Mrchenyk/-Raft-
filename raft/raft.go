@@ -54,7 +54,7 @@ type Raft struct {
 	electionTimeout time.Duration
 
 	//每个节点的日志
-	log []LogEntry
+	log *RaftLog
 
 	//Leader节点使用
 	//节点的视图
@@ -63,6 +63,7 @@ type Raft struct {
 
 	//apply loop 的字段
 	applyCh chan ApplyMsg
+	snapPending bool
 	commitIndex int
 	lastApplied int
 	applyCond *sync.Cond
@@ -112,7 +113,7 @@ func (rf *Raft)becomeLeader(){
 
 	//初始化每个节点的nextIndex和matchIndex
 	for peer:=0;peer<len(rf.peers);peer++{
-		rf.nextIndex[peer]=len(rf.log)
+		rf.nextIndex[peer]=rf.log.size()
 		rf.matchIndex[peer]=0
 	}
 }
@@ -123,17 +124,35 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.role==Leader
 }
 
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. even if the Raft instance has been killed,
+// this function should return gracefully.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	if rf.role!=Leader{
+		return 0,0,false
+	}
+	rf.log.append(LogEntry{
+		Command:command,
+		CommandValid:true,
+		Term: rf.currentTerm,})
 
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (PartD).
+	rf.persist()
+	LOG(rf.me,rf.currentTerm,DInfo,"Peer:%v append log %v",rf.me,rf.log)
 
+	return rf.log.size()-1, rf.currentTerm, true
 }
-
 
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -161,17 +180,6 @@ func (rf *Raft)contextLostLocked(role Role,term int)bool{
 
 }
 
-func (rf *Raft)firstLogFor(term int)int{
-	for index,entry:=range rf.log{
-		if entry.Term==term{
-			return index
-		}else if(entry.Term>term){
-			break
-		}
-	}
-	return InvalidIndex
-}
-
 
 
 // the service or tester wants to create a Raft server. the ports
@@ -195,13 +203,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor=-1
 
 	//放入空节点避免边界判断
-	rf.log = append(rf.log, LogEntry{Term:InvalidTerm})
+	rf.log=NewLog(InvalidIndex,InvalidTerm,nil,nil)
+
 	rf.matchIndex=make([]int, len(rf.peers))
 	rf.nextIndex=make([]int, len(rf.peers))
 
 	//用于日志apply的初始化
 	rf.applyCh=applyCh
 	rf.applyCond=sync.NewCond(&rf.mu)
+
+	rf.snapPending=false 
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

@@ -4,25 +4,45 @@ func (rf *Raft)applyTicker(){
 	for !rf.killed(){
 		rf.mu.Lock()
 		rf.applyCond.Wait()
-
 		entries:=make([]LogEntry,0)
-		for i:=rf.lastApplied+1;i<=rf.commitIndex;i++{
-			entries=append(entries,rf.log[i])
+		snapPendingApply:=rf.snapPending
+
+		if(!snapPendingApply){
+			for i:=rf.lastApplied+1;i<=rf.commitIndex;i++{
+			entries=append(entries,rf.log.at(i))
+		}
 		}
 
 
 		rf.mu.Unlock()
 		
-		for i,entry:=range entries{
+		if(!snapPendingApply){
+			for i,entry:=range entries{
+				rf.applyCh<-ApplyMsg{
+					Command:entry.Command,
+					CommandIndex:i+rf.lastApplied+1,
+					CommandValid:entry.CommandValid,
+				}
+			}
+		}else{
 			rf.applyCh<-ApplyMsg{
-				Command:entry.Command,
-				CommandIndex:i+rf.lastApplied+1,
-				CommandValid:entry.CommandValid,
+				SnapshotValid:true,
+				Snapshot:	  rf.log.snapshot,
+				SnapshotTerm: rf.log.snapLastTerm,
+				SnapshotIndex:rf.log.snapLastIndex,
 			}
 		}
 
 		rf.mu.Lock()
-		rf.lastApplied+=len(entries)
+		if(!snapPendingApply){
+			rf.lastApplied+=len(entries)
+		}else{
+			rf.lastApplied=rf.log.snapLastIndex
+			if rf.commitIndex<rf.lastApplied{
+				rf.commitIndex=rf.lastApplied
+			}
+			rf.snapPending=false
+		}
 		rf.mu.Unlock()
 	}
 }
