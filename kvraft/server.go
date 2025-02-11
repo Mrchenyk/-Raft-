@@ -17,9 +17,8 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
+	maxraftstate int // 当达到该值时进行 snapshot 快照持久化
 
-	// Your definitions here.
 	lastApplied    int
 	stateMachine   *MemoryKVStateMachine
 	notifyChans    map[int]chan *OpReply
@@ -27,7 +26,6 @@ type KVServer struct {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
 	// 调用 raft，将请求存储到 raft 日志中并进行同步
 	index, _, isLeader := kv.rf.Start(Op{Key: args.Key, OpType: OpGet})
 
@@ -63,7 +61,6 @@ func (kv *KVServer) requestDuplicated(clientId, seqId int64) bool {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
 	// 判断请求是否重复
 	kv.mu.Lock()
 	if kv.requestDuplicated(args.ClientId, args.SeqId) {
@@ -110,18 +107,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}()
 }
 
-// Kill the tester calls Kill() when a KVServer instance won't
-// be needed again. for your convenience, we supply
-// code to set rf.dead (without needing a lock),
-// and a killed() method to test rf.dead in
-// long-running loops. you can also add your own
-// code to Kill(). you're not required to do anything
-// about this, but it may be convenient (for example)
-// to suppress debug output from a Kill()ed instance.
+
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
-	// Your code here, if desired.
+
 }
 
 func (kv *KVServer) killed() bool {
@@ -150,12 +140,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
-	// You may need initialization code here.
+	//初始化
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+
 	kv.dead = 0
 	kv.lastApplied = 0
 	kv.stateMachine = NewMemoryKVStateMachine()

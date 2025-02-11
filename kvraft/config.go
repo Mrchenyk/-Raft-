@@ -30,7 +30,6 @@ func makeSeed() int64 {
 	return x
 }
 
-// Randomize server handles
 func random_handles(kvh []*labrpc.ClientEnd) []*labrpc.ClientEnd {
 	sa := make([]*labrpc.ClientEnd, len(kvh))
 	copy(sa, kvh)

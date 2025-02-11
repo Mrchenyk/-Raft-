@@ -6,7 +6,7 @@ import "math/big"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	leaderId int // 记录 Leader 节点的 id，避免下一次请求的时候去轮询查找 Leader
+	leaderId int 
 	
 	// clientID+seqId 确定一个唯一的命令
 	clientId int64
@@ -30,18 +30,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-// Get fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
+//GET获取数据
 func (ck *Clerk) Get(key string) string {
-	// You will have to modify this function.
 	args := GetArgs{
 		Key: key,
 	}
@@ -59,14 +49,7 @@ func (ck *Clerk) Get(key string) string {
 	}
 }
 
-// PutAppend shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
+
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	args := PutAppendArgs{
@@ -91,9 +74,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	}
 }
 
+//Put设置数据
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
+
+//Append追加数据
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
 }

@@ -22,9 +22,7 @@ type PutAppendArgs struct {
 	Op       string // "Put" or "Append"
 	ClientId int64
 	SeqId    int64
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+
 }
 
 type PutAppendReply struct {
@@ -33,7 +31,6 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
-	// You'll have to add definitions here.
 }
 
 type GetReply struct {
@@ -53,9 +50,6 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
 	Key      string
 	Value    string
 	OpType   OperationType
