@@ -177,7 +177,12 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft)contextLostLocked(role Role,term int)bool{
 	return !(rf.currentTerm==term&&rf.role==role);
+}
 
+func (rf *Raft) GetRaftStateSize() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.persister.RaftStateSize()
 }
 
 
